@@ -1,0 +1,574 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AR Navigation — Smart Room Finder</title>
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+    <script>
+      /* Captures the marker's world transform a short moment after first
+         detection (to avoid locking on a wobbly first frame) and pins the
+         marker entity to that pose so children stay visible when the camera
+         leaves the marker. Exposes relock() so the user can re-center the
+         map if it locked into an awkward angle. */
+      AFRAME.registerComponent("lock-on-detect", {
+        init: function () {
+          this.locked = false;
+          this.pendingLockAt = 0;       // timestamp when we plan to lock
+          this.markerVisible = false;
+          this.lockedMatrix = new THREE.Matrix4();
+
+          this.el.addEventListener("markerFound", () => {
+            this.markerVisible = true;
+            if (this.locked) return;
+            // Wait ~700ms of stable visibility before locking so the user
+            // has time to settle the phone over the marker.
+            this.pendingLockAt = performance.now() + 700;
+            this.el.emit("markerLocking");
+          });
+          this.el.addEventListener("markerLost", () => {
+            this.markerVisible = false;
+            // Cancel a pending lock if the marker disappeared too soon.
+            if (!this.locked) this.pendingLockAt = 0;
+          });
+        },
+        tick: function () {
+          if (!this.locked) {
+            // Lock once enough stable time has passed.
+            if (this.pendingLockAt && this.markerVisible && performance.now() >= this.pendingLockAt) {
+              this.el.object3D.updateMatrixWorld(true);
+              this.lockedMatrix.copy(this.el.object3D.matrix);
+              this.locked = true;
+              this.pendingLockAt = 0;
+              this.el.emit("markerLocked");
+            }
+            return;
+          }
+          const obj = this.el.object3D;
+          obj.visible = true;
+          obj.matrix.copy(this.lockedMatrix);
+          obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
+        },
+        relock: function () {
+          // Unlock and wait for the marker to be re-detected. The map hides
+          // until the next stable lock.
+          this.locked = false;
+          this.pendingLockAt = 0;
+          this.el.object3D.visible = false;
+          this.el.emit("markerRelock");
+        }
+      });
+    </script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { overflow: hidden; font-family: system-ui, -apple-system, sans-serif; background: #000; }
+
+      #loading {
+        position: fixed; inset: 0; background: #0a0f1e;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+        z-index: 3000; transition: opacity 0.6s ease;
+      }
+      #loading.hidden { opacity: 0; pointer-events: none; }
+      .spinner { width: 44px; height: 44px; border: 3px solid rgba(59,130,246,0.2); border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      #loading .title { color: #fff; font-size: 17px; font-weight: 700; }
+      #loading .sub { color: rgba(255,255,255,0.45); font-size: 13px; text-align: center; max-width: 240px; }
+
+      #ui { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
+
+      #top-bar {
+        position: absolute; top: 14px; left: 14px; right: 14px;
+        display: flex; flex-direction: column; align-items: center; gap: 8px;
+      }
+      #status-pill {
+        background: rgba(10,15,30,0.78); backdrop-filter: blur(16px);
+        border: 1px solid rgba(255,255,255,0.12); border-radius: 999px;
+        padding: 8px 14px 8px 12px;
+        display: inline-flex; align-items: center; gap: 9px;
+        font-size: 12.5px; color: #fff; font-weight: 500;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      }
+      #status-dot {
+        width: 8px; height: 8px; border-radius: 50%; background: #f59e0b;
+        box-shadow: 0 0 8px #f59e0b; flex-shrink: 0; transition: background 0.4s, box-shadow 0.4s;
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      #status-dot.found { background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+      @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.55;transform:scale(0.82)} }
+
+      #legend {
+        background: rgba(10,15,30,0.78); backdrop-filter: blur(16px);
+        border: 1px solid rgba(255,255,255,0.12); border-radius: 999px;
+        padding: 7px 14px; display: inline-flex; align-items: center; gap: 14px;
+        font-size: 11.5px; color: rgba(255,255,255,0.85); font-weight: 500;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      }
+      .legend-row { display: inline-flex; align-items: center; gap: 6px; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+      .dot-green { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+      .dot-orange { background: #f97316; box-shadow: 0 0 6px #f97316; }
+      .line-orange { width: 18px; height: 3px; border-radius: 2px; background: linear-gradient(to right, #f97316, #fb923c); flex-shrink: 0; }
+
+      #marker-guide {
+        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -55%);
+        display: flex; flex-direction: column; align-items: center; gap: 18px; transition: opacity 0.5s;
+      }
+      #marker-guide.hidden { opacity: 0; pointer-events: none; }
+
+      .scan-frame {
+        width: 200px; height: 200px; position: relative;
+        filter: drop-shadow(0 0 12px rgba(59,130,246,0.35));
+      }
+      .scan-frame::before, .scan-frame::after, .corner-br, .corner-bl {
+        content: ""; position: absolute; width: 38px; height: 38px;
+        border-color: #3b82f6; border-style: solid;
+      }
+      .scan-frame::before { top: 0; left: 0; border-width: 3px 0 0 3px; border-radius: 6px 0 0 0; }
+      .scan-frame::after  { top: 0; right: 0; border-width: 3px 3px 0 0; border-radius: 0 6px 0 0; }
+      .corner-br { bottom: 0; right: 0; border-width: 0 3px 3px 0; border-radius: 0 0 6px 0; }
+      .corner-bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; border-radius: 0 0 0 6px; }
+      .scan-line {
+        position: absolute; left: 10px; right: 10px; height: 2px;
+        background: linear-gradient(to right, transparent, #3b82f6 30%, #60a5fa 50%, #3b82f6 70%, transparent);
+        box-shadow: 0 0 10px rgba(59,130,246,0.7);
+        animation: scanMove 2s ease-in-out infinite; top: 10px;
+      }
+      @keyframes scanMove { 0%{top:10px;opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{top:calc(100% - 12px);opacity:0} }
+
+      #guide-text {
+        color: rgba(255,255,255,0.9); font-size: 13.5px; font-weight: 500; text-align: center;
+        background: rgba(10,15,30,0.7); backdrop-filter: blur(12px);
+        border-radius: 10px; padding: 9px 18px; border: 1px solid rgba(255,255,255,0.1);
+        letter-spacing: 0.2px;
+      }
+
+      /* Re-center button — only visible after the map has been locked.
+         Positioned above the parent app's "Navigating to" HUD card. */
+      #recenter-btn {
+        position: absolute; bottom: 90px; right: 14px;
+        pointer-events: auto;
+        background: rgba(10,15,30,0.85); backdrop-filter: blur(16px);
+        border: 1px solid rgba(59,130,246,0.45); color: #93c5fd;
+        border-radius: 999px; padding: 8px 13px;
+        display: none; align-items: center; gap: 7px;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+        transition: transform 0.15s, background 0.2s, border-color 0.2s;
+      }
+      #recenter-btn.visible { display: inline-flex; }
+      #recenter-btn:hover, #recenter-btn:active {
+        background: rgba(59,130,246,0.18); border-color: rgba(59,130,246,0.7); color: #bfdbfe;
+        transform: scale(1.03);
+      }
+      #recenter-btn .recenter-icon {
+        width: 14px; height: 14px; border: 2px solid currentColor; border-radius: 50%;
+        border-top-color: transparent; display: inline-block;
+      }
+      #recenter-btn.spinning .recenter-icon { animation: spin 0.7s linear infinite; }
+
+      /* Brief toast for lock state changes */
+      #lock-toast {
+        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) translateY(-30px);
+        background: rgba(34,197,94,0.95); color: #fff;
+        border-radius: 12px; padding: 10px 18px;
+        font-size: 13px; font-weight: 600;
+        box-shadow: 0 10px 30px rgba(34,197,94,0.35);
+        opacity: 0; pointer-events: none;
+        transition: opacity 0.3s, transform 0.3s;
+      }
+      #lock-toast.show { opacity: 1; transform: translate(-50%, -50%) translateY(0); }
+    </style>
+  </head>
+  <body>
+    <div id="loading">
+      <div class="spinner"></div>
+      <div class="title">Starting AR Camera</div>
+      <div class="sub">Allow camera access when prompted — the floor map will appear on the marker</div>
+    </div>
+
+    <div id="ui">
+      <div id="top-bar">
+        <div id="status-pill">
+          <div id="status-dot"></div>
+          <span id="status-text">Scan the Hiro marker to begin</span>
+        </div>
+        <div id="legend">
+          <div class="legend-row"><div class="dot dot-green"></div>Start</div>
+          <div class="legend-row"><div class="dot dot-orange"></div>Destination</div>
+          <div class="legend-row"><div class="line-orange"></div>Route</div>
+        </div>
+      </div>
+
+      <div id="marker-guide">
+        <div class="scan-frame">
+          <div class="scan-line"></div>
+          <div class="corner-br"></div>
+          <div class="corner-bl"></div>
+        </div>
+        <div id="guide-text">Point camera at the Hiro marker</div>
+      </div>
+
+      <button id="recenter-btn" type="button" aria-label="Re-center map on marker">
+        <span class="recenter-icon"></span>
+        <span>Re-center</span>
+      </button>
+
+      <div id="lock-toast">Map locked</div>
+    </div>
+
+    <a-scene
+      id="ar-scene"
+      embedded
+      arjs="sourceType: webcam; debugUIEnabled: false;"
+      vr-mode-ui="enabled: false"
+      renderer="logarithmicDepthBuffer: true; precision: medium; antialias: true;"
+    >
+      <a-assets>
+        <img id="floor-img" crossorigin="anonymous" />
+      </a-assets>
+
+      <a-marker preset="hiro" id="hiro-marker" lock-on-detect>
+        <!-- Uniform scale wrapper — shrinks the entire map+route+label
+             so it fits a phone view comfortably. Tweak to taste. -->
+        <a-entity scale="0.65 0.65 0.65">
+          <!-- Blue glow border -->
+          <a-plane position="0 0 0" rotation="-90 0 0" width="3.15" height="2.35" color="#3b82f6" material="opacity: 0.15; transparent: true"></a-plane>
+
+          <!-- Floor plan image -->
+          <a-plane src="#floor-img" position="0 0.01 0" rotation="-90 0 0" width="3" height="2.2"
+            material="opacity: 0.95; transparent: true; side: double" shadow="receive: true"></a-plane>
+
+          <!-- Corner dots -->
+          <a-sphere position="-1.5 0.05 -1.1" radius="0.04" color="#3b82f6" material="emissive: #3b82f6; emissiveIntensity: 0.5"></a-sphere>
+          <a-sphere position=" 1.5 0.05 -1.1" radius="0.04" color="#3b82f6" material="emissive: #3b82f6; emissiveIntensity: 0.5"></a-sphere>
+          <a-sphere position="-1.5 0.05  1.1" radius="0.04" color="#3b82f6" material="emissive: #3b82f6; emissiveIntensity: 0.5"></a-sphere>
+          <a-sphere position=" 1.5 0.05  1.1" radius="0.04" color="#3b82f6" material="emissive: #3b82f6; emissiveIntensity: 0.5"></a-sphere>
+
+          <!-- Dynamic route elements injected by script -->
+          <a-entity id="route-container"></a-entity>
+
+          <!-- Destination label (3D text) -->
+          <a-entity id="dest-3d" position="0 0.52 -0.75" visible="false">
+            <a-plane width="2.4" height="0.36" color="#1e3a8a" opacity="0.9" position="0 0 -0.01"
+              animation="property: scale; from: 1 1 1; to: 1.03 1.03 1; dur: 1200; dir: alternate; loop: true">
+            </a-plane>
+            <a-text id="dest-3d-text" value="" align="center" position="0 0 0.01" scale="0.46 0.46 0.46" color="#ffffff" wrap-count="28"></a-text>
+          </a-entity>
+
+          <a-light type="point" color="#ffffff" intensity="0.6" position="0 1.5 0"></a-light>
+        </a-entity>
+      </a-marker>
+
+      <a-entity camera></a-entity>
+    </a-scene>
+
+    <script>
+      /* ───── Parse URL Parameters ───── */
+      const params = new URLSearchParams(window.location.search);
+      const dest   = params.get("dest") || "";
+      const num    = params.get("num")  || "";
+      const cat    = params.get("cat")  || "";
+      const roomId = params.get("id")   || "";
+      const dx     = parseFloat(params.get("dx") || "0");
+      const dy     = parseFloat(params.get("dy") || "0");
+      const dist   = params.get("dist") || "";
+      const eta    = params.get("eta")  || "";
+      const routeStr = params.get("route") || "";
+      const mapImg   = params.get("map") || "/map/ground-floor.jpg";
+
+      // Set the floor image source dynamically
+      document.getElementById("floor-img").setAttribute("src", mapImg);
+
+      // Parse route waypoints
+      const routeWaypoints = routeStr ? routeStr.split("|").map(p => {
+        const [x, y] = p.split(",").map(Number);
+        return { x, y };
+      }) : [];
+
+      /* ───── Coordinate Mapping ─────
+         Image (1920×1080) → A-Frame 3D marker space
+         Plane is 3.0 × 2.2 at rotation -90° X
+         x3d = (imgX / 1920 - 0.5) * 3.0  (left-right)
+         z3d = (imgY / 1080 - 0.5) * 2.2   (forward-back, because -90° X rotation)
+      */
+      function imgTo3D(imgX, imgY, height) {
+        return {
+          x: (imgX / 1920 - 0.5) * 3.0,
+          y: height || 0.06,
+          z: (imgY / 1080 - 0.5) * 2.2
+        };
+      }
+
+      /* Destination + distance/ETA are shown by the parent app's HUD,
+         so the iframe only displays scan status + legend. */
+
+      /* ───── Scene Load ───── */
+      document.getElementById("ar-scene").addEventListener("loaded", () => {
+        setTimeout(() => document.getElementById("loading").classList.add("hidden"), 1000);
+      });
+
+      /* ───── Build Dynamic Route Elements ───── */
+      function buildRouteScene() {
+        const container = document.getElementById("route-container");
+        if (!container) return;
+
+        // Clear any existing route elements
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        if (routeWaypoints.length < 2) return;
+
+        // 1. Route path — glowing segments between waypoints
+        for (let i = 0; i < routeWaypoints.length - 1; i++) {
+          const start = imgTo3D(routeWaypoints[i].x, routeWaypoints[i].y, 0.05);
+          const end   = imgTo3D(routeWaypoints[i + 1].x, routeWaypoints[i + 1].y, 0.05);
+
+          const midX = (start.x + end.x) / 2;
+          const midZ = (start.z + end.z) / 2;
+          const segDx = end.x - start.x;
+          const segDz = end.z - start.z;
+          const segLen = Math.sqrt(segDx * segDx + segDz * segDz);
+          const angle = Math.atan2(segDx, segDz) * (180 / Math.PI);
+
+          // Glowing background tube
+          const glow = document.createElement("a-cylinder");
+          glow.setAttribute("position", midX + " 0.05 " + midZ);
+          glow.setAttribute("rotation", "0 " + angle + " 90");
+          glow.setAttribute("radius", "0.035");
+          glow.setAttribute("height", String(segLen));
+          glow.setAttribute("material", "color: #f97316; emissive: #f97316; emissiveIntensity: 0.8; transparent: true; opacity: 0.3");
+          container.appendChild(glow);
+
+          // Core path tube
+          const seg = document.createElement("a-cylinder");
+          seg.setAttribute("position", midX + " 0.06 " + midZ);
+          seg.setAttribute("rotation", "0 " + angle + " 90");
+          seg.setAttribute("radius", "0.018");
+          seg.setAttribute("height", String(segLen));
+          seg.setAttribute("material", "color: #fb923c; emissive: #f97316; emissiveIntensity: 1.2; transparent: true; opacity: 0.9");
+          seg.setAttribute("animation", "property: material.opacity; from: 0.9; to: 0.5; dur: 1200; dir: alternate; loop: true; easing: easeInOutSine");
+          container.appendChild(seg);
+        }
+
+        // 2. Direction arrows along the path — small cones at intervals
+        const totalPoints = [];
+        for (let i = 0; i < routeWaypoints.length - 1; i++) {
+          const s = routeWaypoints[i];
+          const e = routeWaypoints[i + 1];
+          const ddx = e.x - s.x;
+          const ddy = e.y - s.y;
+          const segDist = Math.sqrt(ddx * ddx + ddy * ddy);
+          const steps = Math.max(1, Math.floor(segDist / 80));
+          for (let j = 0; j < steps; j++) {
+            const t = (j + 0.5) / steps;
+            totalPoints.push({
+              x: s.x + ddx * t,
+              y: s.y + ddy * t,
+              dirX: ddx,
+              dirY: ddy
+            });
+          }
+        }
+
+        totalPoints.forEach((pt, idx) => {
+          const pos = imgTo3D(pt.x, pt.y, 0.10);
+          const dir3d = imgTo3D(pt.x + pt.dirX, pt.y + pt.dirY, 0.10);
+          const angleDeg = Math.atan2(dir3d.x - pos.x, dir3d.z - pos.z) * (180 / Math.PI);
+
+          const arrow = document.createElement("a-cone");
+          arrow.setAttribute("position", pos.x + " " + pos.y + " " + pos.z);
+          arrow.setAttribute("rotation", "0 " + angleDeg + " -90");
+          arrow.setAttribute("radius-bottom", "0.04");
+          arrow.setAttribute("radius-top", "0");
+          arrow.setAttribute("height", "0.08");
+          arrow.setAttribute("material", "color: #f97316; emissive: #ff6600; emissiveIntensity: 1.5; transparent: true; opacity: 0.85");
+          const delay = idx * 150;
+          arrow.setAttribute("animation", "property: material.opacity; from: 0.85; to: 0.3; dur: 1000; dir: alternate; loop: true; delay: " + delay + "; easing: easeInOutSine");
+          container.appendChild(arrow);
+        });
+
+        // 3. START pin (Elevator) — green
+        const startPos = imgTo3D(routeWaypoints[0].x, routeWaypoints[0].y, 0);
+        const startPin = document.createElement("a-entity");
+        startPin.setAttribute("position", startPos.x + " 0 " + startPos.z);
+
+        // Green vertical stick
+        const startStick = document.createElement("a-cylinder");
+        startStick.setAttribute("position", "0 0.15 0");
+        startStick.setAttribute("radius", "0.012");
+        startStick.setAttribute("height", "0.3");
+        startStick.setAttribute("material", "color: #22c55e; emissive: #22c55e; emissiveIntensity: 1.0");
+        startPin.appendChild(startStick);
+
+        // Green sphere on top
+        const startSphere = document.createElement("a-sphere");
+        startSphere.setAttribute("position", "0 0.32 0");
+        startSphere.setAttribute("radius", "0.05");
+        startSphere.setAttribute("material", "color: #22c55e; emissive: #22c55e; emissiveIntensity: 1.2");
+        startSphere.setAttribute("animation", "property: position; from: 0 0.32 0; to: 0 0.38 0; dur: 1000; dir: alternate; loop: true; easing: easeInOutSine");
+        startPin.appendChild(startSphere);
+
+        // START label
+        const startLabel = document.createElement("a-text");
+        startLabel.setAttribute("value", "START");
+        startLabel.setAttribute("align", "center");
+        startLabel.setAttribute("position", "0 0.46 0");
+        startLabel.setAttribute("scale", "0.28 0.28 0.28");
+        startLabel.setAttribute("color", "#22c55e");
+        startPin.appendChild(startLabel);
+
+        // Ground glow ring
+        const startRing = document.createElement("a-ring");
+        startRing.setAttribute("position", "0 0.02 0");
+        startRing.setAttribute("rotation", "-90 0 0");
+        startRing.setAttribute("radius-inner", "0.04");
+        startRing.setAttribute("radius-outer", "0.08");
+        startRing.setAttribute("material", "color: #22c55e; emissive: #22c55e; emissiveIntensity: 0.8; transparent: true; opacity: 0.6; side: double");
+        startRing.setAttribute("animation", "property: scale; from: 1 1 1; to: 1.5 1.5 1; dur: 1500; dir: alternate; loop: true; easing: easeInOutSine");
+        startPin.appendChild(startRing);
+
+        container.appendChild(startPin);
+
+        // 4. DESTINATION pin — orange
+        if (dx && dy) {
+          const destPos = imgTo3D(dx, dy, 0);
+          const destPin = document.createElement("a-entity");
+          destPin.setAttribute("position", destPos.x + " 0 " + destPos.z);
+
+          // Orange vertical stick
+          const destStick = document.createElement("a-cylinder");
+          destStick.setAttribute("position", "0 0.18 0");
+          destStick.setAttribute("radius", "0.015");
+          destStick.setAttribute("height", "0.36");
+          destStick.setAttribute("material", "color: #f97316; emissive: #f97316; emissiveIntensity: 1.0");
+          destPin.appendChild(destStick);
+
+          // Orange sphere on top (larger)
+          const destSphere = document.createElement("a-sphere");
+          destSphere.setAttribute("position", "0 0.38 0");
+          destSphere.setAttribute("radius", "0.065");
+          destSphere.setAttribute("material", "color: #ea580c; emissive: #f97316; emissiveIntensity: 1.5");
+          destSphere.setAttribute("animation", "property: position; from: 0 0.38 0; to: 0 0.45 0; dur: 900; dir: alternate; loop: true; easing: easeInOutSine");
+          destPin.appendChild(destSphere);
+
+          // Destination room name label
+          if (dest) {
+            const destLabel = document.createElement("a-text");
+            destLabel.setAttribute("value", dest);
+            destLabel.setAttribute("align", "center");
+            destLabel.setAttribute("position", "0 0.55 0");
+            destLabel.setAttribute("scale", "0.24 0.24 0.24");
+            destLabel.setAttribute("color", "#fb923c");
+            destLabel.setAttribute("wrap-count", "20");
+            destPin.appendChild(destLabel);
+          }
+
+          // Pulsing ground ring
+          const destRing = document.createElement("a-ring");
+          destRing.setAttribute("position", "0 0.02 0");
+          destRing.setAttribute("rotation", "-90 0 0");
+          destRing.setAttribute("radius-inner", "0.05");
+          destRing.setAttribute("radius-outer", "0.10");
+          destRing.setAttribute("material", "color: #f97316; emissive: #f97316; emissiveIntensity: 1.0; transparent: true; opacity: 0.5; side: double");
+          destRing.setAttribute("animation", "property: scale; from: 1 1 1; to: 2 2 1; dur: 1500; dir: alternate; loop: true; easing: easeInOutSine");
+          destPin.appendChild(destRing);
+
+          // Outer pulse ring
+          const destOuter = document.createElement("a-ring");
+          destOuter.setAttribute("position", "0 0.02 0");
+          destOuter.setAttribute("rotation", "-90 0 0");
+          destOuter.setAttribute("radius-inner", "0.08");
+          destOuter.setAttribute("radius-outer", "0.12");
+          destOuter.setAttribute("material", "color: #ea580c; transparent: true; opacity: 0.3; side: double");
+          destOuter.setAttribute("animation", "property: scale; from: 1 1 1; to: 2.5 2.5 1; dur: 2000; loop: true; easing: easeOutQuad");
+          destOuter.setAttribute("animation__fade", "property: material.opacity; from: 0.3; to: 0; dur: 2000; loop: true; easing: easeOutQuad");
+          destPin.appendChild(destOuter);
+
+          container.appendChild(destPin);
+        }
+      }
+
+      /* ───── Marker Events ───── */
+      const marker      = document.getElementById("hiro-marker");
+      const dot         = document.getElementById("status-dot");
+      const text        = document.getElementById("status-text");
+      const guide       = document.getElementById("marker-guide");
+      const recenterBtn = document.getElementById("recenter-btn");
+      const lockToast   = document.getElementById("lock-toast");
+
+      let routeBuilt = false;
+      let mapLocked  = false;
+
+      function showToast(message, color) {
+        lockToast.textContent = message;
+        if (color) lockToast.style.background = color;
+        lockToast.classList.add("show");
+        clearTimeout(lockToast._t);
+        lockToast._t = setTimeout(() => lockToast.classList.remove("show"), 1400);
+      }
+
+      marker.addEventListener("markerFound", () => {
+        dot.classList.add("found");
+        if (mapLocked) {
+          // Already locked — text already reflects that.
+        } else if (dest && dist) {
+          text.textContent = "Hold steady · Locking on " + dest;
+        } else {
+          text.textContent = "Hold steady · Locking…";
+        }
+        guide.classList.add("hidden");
+
+        // Show destination 3D label
+        if (dest) {
+          document.getElementById("dest-3d").setAttribute("visible", "true");
+          document.getElementById("dest-3d-text").setAttribute("value", dest + (num ? "\n" + num : ""));
+        }
+
+        // Build route elements on first marker detection
+        if (!routeBuilt) {
+          buildRouteScene();
+          routeBuilt = true;
+        }
+      });
+
+      // Fired by lock-on-detect once the map is pinned in place
+      marker.addEventListener("markerLocked", () => {
+        mapLocked = true;
+        text.textContent = dest
+          ? "Map locked · Navigating to " + dest
+          : "Map locked — you can move freely";
+        recenterBtn.classList.add("visible");
+        recenterBtn.classList.remove("spinning");
+        showToast("Map locked", "rgba(34,197,94,0.95)");
+      });
+
+      // Fired when the user taps Re-center
+      marker.addEventListener("markerRelock", () => {
+        mapLocked = false;
+        dot.classList.remove("found");
+        text.textContent = "Re-scan the marker to re-center the map";
+        guide.classList.remove("hidden");
+        recenterBtn.classList.add("spinning");
+        if (dest) document.getElementById("dest-3d").setAttribute("visible", "false");
+      });
+
+      // Re-center button — calls the lock-on-detect component's relock()
+      recenterBtn.addEventListener("click", () => {
+        const comp = marker.components["lock-on-detect"];
+        if (comp && comp.relock) comp.relock();
+      });
+
+      marker.addEventListener("markerLost", () => {
+        if (mapLocked) {
+          // Map is permanently anchored; do not show the scan-again UI.
+          dot.classList.add("found");
+          guide.classList.add("hidden");
+          return;
+        }
+        dot.classList.remove("found");
+        text.textContent = "Marker lost — point camera back at marker";
+        guide.classList.remove("hidden");
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx next build)",
+      "Bash(ls -la \"C:\\\\Users\\\\User-PC\\\\Documents\\\\evacuation-plan-build\\\\public\\\\map\"\" 2>/dev/null || dir \"C:UsersUser-PCDocumentsevacuation-plan-buildpublicmap \")",
+      "Bash(npm run build)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(tasklist)",
+      "Bash(taskkill //F //PID 31860)",
+      "Bash(taskkill //F //PID 20024)",
+      "Bash(rm -rf .next)",
+      "Bash(npx next dev -p 3000)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(where npm:*)",
+      "Bash(where npx:*)",
+      "Bash(where node:*)",
+      "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''D:/evacuation-plan-build/public/map/2nd-floor.png''\\).metadata\\(\\).then\\(m => console.log\\(m.width, m.height\\)\\)\")",
+      "Bash(python -c \"from PIL import Image; im=Image.open\\(''D:/evacuation-plan-build/public/map/2nd-floor.png''\\); print\\(im.size\\)\")",
+      "Bash(find /d/evacuation-plan-build -type f -name *[Ff]loor*[Mm]ap*)",
+      "Bash(grep -r \"FloorMap3D\\\\|THREE\\\\|three\\\\.js\" /d/evacuation-plan-build/lib --include=*.ts --include=*.tsx --include=*.js --include=*.jsx)",
+      "Bash(npx tsc:*)",
+      "Bash(find D:/evacuation-plan-build -type f -name *ar* -o -name *AR*)",
+      "Bash(find D:/evacuation-plan-build -name *ar-view* -o -name *marker*)",
+      "Bash(npx kill-port:*)",
+      "Bash(wc -l /d/evacuation-plan-build/components/FloorMap3D*.jsx)",
+      "Bash(ls -la /d/evacuation-plan-build/app/map/*/)",
+      "Bash(ls -lh /d/evacuation-plan-build/components/FloorMap3D*.jsx)",
+      "Bash(node -e \"require\\('typescript'\\).transpileModule\\(require\\('fs'\\).readFileSync\\('app/map/second-floor/page.tsx', 'utf8'\\), { compilerOptions: { jsx: 'preserve', target: 'esnext' } }\\)\")",
+      "Bash(identify public/map/2nd-floor.png)"
+    ]
+  }
+}
