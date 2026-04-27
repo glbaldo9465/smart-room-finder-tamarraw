@@ -30,7 +30,7 @@ export default function HomePage() {
             >
               <div className="mb-6 inline-flex items-center gap-2 rounded-full border bg-card px-4 py-2 text-sm font-medium shadow-sm">
                 <MapPin className="h-4 w-4 text-primary" />
-                Smart Room Navigation ✅ Updated
+                Saint Benedict Hall Navigation System
               </div>
 
               <h1 className="mb-6 text-balance text-4xl font-bold tracking-tight text-foreground sm:text-5xl lg:text-6xl">
